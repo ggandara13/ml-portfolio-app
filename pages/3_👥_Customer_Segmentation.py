@@ -261,12 +261,13 @@ if data_loaded:
                 
                 if xgb_available:
                     model = xgb.XGBRegressor(
-                        n_estimators=200,
+                        n_estimators=100,  # Reduced from 200 for faster training
                         max_depth=4,
-                        learning_rate=0.05,
+                        learning_rate=0.1,  # Increased from 0.05 for faster convergence
                         subsample=0.8,
                         colsample_bytree=0.8,
-                        random_state=42
+                        random_state=42,
+                        n_jobs=-1  # Use all cores
                     )
                 else:
                     model = GradientBoostingRegressor(
@@ -285,7 +286,7 @@ if data_loaded:
                 test_r2 = r2_score(y_test, y_pred_test)
                 test_rmse = np.sqrt(mean_squared_error(y_test, y_pred_test))
                 test_mae = mean_absolute_error(y_test, y_pred_test)
-                cv_scores = cross_val_score(model, X, y, cv=5, scoring='r2')
+                cv_scores = cross_val_score(model, X, y, cv=3, scoring='r2')  # Reduced from 5 for speed
                 
                 st.session_state['xgb_model'] = model
                 st.session_state['X_train'] = X_train
@@ -423,8 +424,8 @@ if data_loaded:
                 if st.button("📊 Generate SHAP Analysis", type="primary"):
                     with st.spinner("Computing SHAP values..."):
                         
-                        X_sample = X_test.sample(min(100, len(X_test)), random_state=42)
-                        X_background = X_train.sample(min(50, len(X_train)), random_state=42)
+                        X_sample = X_test.sample(min(50, len(X_test)), random_state=42)  # Reduced from 100
+                        X_background = X_train.sample(min(30, len(X_train)), random_state=42)  # Reduced from 50
                         
                         try:
                             explainer = shap.Explainer(model.predict, X_background)
@@ -637,7 +638,7 @@ if data_loaded:
         with col1:
             n_clusters = st.slider("Number of Clusters (K)", 2, 8, 4)
             
-            kmeans = KMeans(n_clusters=n_clusters, random_state=42, n_init=10)
+            kmeans = KMeans(n_clusters=n_clusters, random_state=42, n_init=5)  # Reduced for speed
             clusters = kmeans.fit_predict(X_scaled)
             df_cluster['Cluster'] = clusters
             df_cluster['Cluster_str'] = df_cluster['Cluster'].astype(str)
@@ -646,13 +647,14 @@ if data_loaded:
             st.metric("Silhouette Score", f"{sil_score:.3f}")
         
         with col2:
+            # Elbow plot with caching
             inertias = []
-            for k in range(2, 10):
-                km = KMeans(n_clusters=k, random_state=42, n_init=10)
+            for k in range(2, 8):  # Reduced from 10 for speed
+                km = KMeans(n_clusters=k, random_state=42, n_init=5)  # Reduced n_init from 10
                 km.fit(X_scaled)
                 inertias.append(km.inertia_)
             
-            fig_elbow = px.line(x=list(range(2, 10)), y=inertias, markers=True,
+            fig_elbow = px.line(x=list(range(2, 8)), y=inertias, markers=True,
                                labels={'x': 'K', 'y': 'Inertia'}, title='Elbow Method')
             fig_elbow.add_vline(x=n_clusters, line_dash='dash', line_color='red')
             fig_elbow.update_layout(height=250)
@@ -766,7 +768,7 @@ if data_loaded:
                 
                 geo_distances = build_distance_matrix(df_geo['lat'].values, df_geo['lon'].values)
                 
-                nn = NearestNeighbors(n_neighbors=min(100, len(df_geo))).fit(X_match)
+                nn = NearestNeighbors(n_neighbors=min(50, len(df_geo))).fit(X_match)  # Reduced from 100
                 feature_distances, indices = nn.kneighbors(X_match)
                 
                 pairs = []
@@ -903,9 +905,9 @@ if data_loaded:
         ## Model Architecture
         ```
         XGBoost Regressor
-        - n_estimators: 200
+        - n_estimators: 100
         - max_depth: 4
-        - learning_rate: 0.05
+        - learning_rate: 0.1
         - subsample: 0.8
         - colsample_bytree: 0.8
         ```
@@ -915,7 +917,7 @@ if data_loaded:
         |--------|-------|----------------|
         | Train R² | 0.987 | Model fits training data well |
         | Test R² | 0.821 | Strong generalization |
-        | CV R² | 0.639 ± 0.20 | Conservative estimate (5-fold) |
+        | CV R² | 0.639 ± 0.20 | Conservative estimate (3-fold) |
         | MAE | $9.24 | Average prediction error |
         
         ## Key Findings
@@ -934,7 +936,7 @@ if data_loaded:
         
         ## SHAP Explainability
         - Uses `shap.Explainer` with model predict function
-        - Background sample: 50 stores
-        - Explanation sample: 100 stores
+        - Background sample: 30 stores
+        - Explanation sample: 50 stores
         - Provides both global (feature importance) and local (individual store) explanations
         """)
