@@ -257,7 +257,7 @@ if data_loaded:
         X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
         
         if st.button("🚀 Train XGBoost Model", type="primary"):
-            with st.spinner("Training model... it will take few minutes"):
+            with st.spinner("Training model... it will take 3 minutes - due to streamlit CPU limitations"):
                 
                 if xgb_available:
                     model = xgb.XGBRegressor(
@@ -422,7 +422,7 @@ if data_loaded:
                 feature_cols = st.session_state['feature_cols']
                 
                 if st.button("📊 Generate SHAP Analysis", type="primary"):
-                    with st.spinner("Computing SHAP values..."):
+                    with st.spinner("Computing SHAP values...it takes 2 min"):
                         
                         X_sample = X_test.sample(min(50, len(X_test)), random_state=42)  # Reduced from 100
                         X_background = X_train.sample(min(30, len(X_train)), random_state=42)  # Reduced from 50
