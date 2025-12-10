@@ -43,8 +43,43 @@ st.markdown("""
     .stTabs [data-baseweb="tab-list"] {
         gap: 24px;
     }
+    .brooklyn-logo {
+        border-radius: 10px;
+    }
 </style>
 """, unsafe_allow_html=True)
+
+# Sidebar with Brooklyn Data Logo
+st.sidebar.image(
+    "https://media.licdn.com/dms/image/v2/D4E0BAQHFt12SN1utkg/company-logo_200_200/company-logo_200_200/0/1736782678595/brooklyndata_logo?e=2147483647&v=beta&t=WRncHmLS1sENcvRZNC1vz-kLioAnogvVPxyfn28nDuw",
+    width=150
+)
+
+st.sidebar.markdown("""
+### Interview Portfolio
+
+**Role:** Senior Data Scientist (Retail ML)  
+**Client:** Major US Eyewear Retailer  
+**Via:** Brooklyn Data Co
+
+---
+
+**Core Workstreams:**
+| Module | Hours |
+|--------|-------|
+| pLTV | 288 |
+| MMM | 288 |
+| Segmentation | 216 |
+
+---
+
+👈 **Select a case study from the pages above**
+
+---
+
+*Built by Gerardo Gandara*  
+*Miami, FL*
+""")
 
 # Header
 st.markdown('<p class="main-header">🔬 Data Science Portfolio</p>', unsafe_allow_html=True)
@@ -112,8 +147,8 @@ with col3:
     *Techniques:*
     - RFM analysis
     - K-Means clustering
-    - Cluster profiling
-    - Segment validation
+    - PCA visualization
+    - Segment profiling
     
     *Business Value:*
     - Targeted campaigns
@@ -181,35 +216,7 @@ with col4:
 
 st.markdown("---")
 
-# Sidebar
-st.sidebar.markdown("""
-### About This Portfolio
-
-**Role:** Senior Data Scientist (Retail ML)  
-**Client:** Major US Eyewear Retailer  
-**Via:** Brooklyn Data Co
-
----
-
-**Core Workstreams:**
-| Module | Hours |
-|--------|-------|
-| pLTV | 288 |
-| MMM | 288 |
-| Segmentation | 216 |
-
----
-
-👈 **Select a case study from the pages above**
-
----
-
-*Built by Gerardo Gandara*  
-*Powered by Streamlit*
-""")
-
 # Footer
-st.markdown("---")
 st.markdown("""
 <div style='text-align: center; color: #666; font-size: 0.9rem;'>
     📧 Contact: <a href='https://github.com/ggandara13'>GitHub</a> | 

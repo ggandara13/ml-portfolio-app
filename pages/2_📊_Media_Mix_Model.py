@@ -1,7 +1,8 @@
 """
 Page 2: Media Mix Model
-========================
-Marketing effectiveness and budget optimization
+=======================
+Marketing effectiveness analysis using Robyn (Meta) with PyMC validation
+Real retail client data (anonymized)
 """
 
 import streamlit as st
@@ -10,557 +11,608 @@ import numpy as np
 import plotly.express as px
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
-from scipy.optimize import minimize
-import warnings
-warnings.filterwarnings('ignore')
+import os
 
 st.set_page_config(page_title="Media Mix Model", page_icon="📊", layout="wide")
 
 # ============================================
-# DATA GENERATION (Synthetic Eyewear Retail)
+# DATA LOADING (Real data from CSV)
 # ============================================
 @st.cache_data
-def generate_mmm_data():
-    """Generate synthetic MMM data for eyewear retailer"""
-    np.random.seed(42)
+def load_mmm_data():
+    """Load real MMM data from CSV"""
+    current_dir = os.path.dirname(os.path.abspath(__file__))
+    parent_dir = os.path.dirname(current_dir)
+    data_path = os.path.join(parent_dir, 'data_sources', 'MMM_Input_sample.csv')
     
-    # 3 years of weekly data
-    n_weeks = 156
-    dates = pd.date_range('2021-01-04', periods=n_weeks, freq='W-MON')
-    
-    # Channel spend (in thousands)
-    data = {
-        'Date': dates,
-        'Week': range(1, n_weeks + 1),
-        'TV': np.random.uniform(50, 150, n_weeks) * (1 + 0.3 * np.sin(np.arange(n_weeks) * 2 * np.pi / 52)),
-        'Paid_Search': np.random.uniform(80, 200, n_weeks) * (1 + 0.2 * np.sin(np.arange(n_weeks) * 2 * np.pi / 52)),
-        'Paid_Social': np.random.uniform(60, 160, n_weeks) * (1 + 0.25 * np.sin(np.arange(n_weeks) * 2 * np.pi / 52)),
-        'Display': np.random.uniform(30, 80, n_weeks),
-        'Email': np.random.uniform(10, 30, n_weeks),
-    }
-    
-    df = pd.DataFrame(data)
-    
-    # Add seasonality for eyewear (back to school, holiday, tax refund season)
-    week_of_year = df['Date'].dt.isocalendar().week
-    seasonality = 1 + 0.15 * np.sin((week_of_year - 10) * 2 * np.pi / 52)  # Peak around week 10 (March - tax refunds)
-    seasonality += 0.2 * ((week_of_year >= 30) & (week_of_year <= 35)).astype(float)  # Back to school
-    seasonality += 0.25 * ((week_of_year >= 47) & (week_of_year <= 52)).astype(float)  # Holiday
-    
-    df['Seasonality'] = seasonality
-    
-    # Adstock transformation function
-    def adstock(x, decay=0.3):
-        result = np.zeros_like(x)
-        result[0] = x[0]
-        for i in range(1, len(x)):
-            result[i] = x[i] + decay * result[i-1]
-        return result
-    
-    # Saturation transformation (diminishing returns)
-    def saturation(x, k=0.5):
-        return 1 - np.exp(-k * x / x.mean())
-    
-    # Apply transformations and create response
-    base_sales = 800  # Base sales in thousands
-    
-    # Channel contributions with different effectiveness
-    tv_contribution = 150 * saturation(adstock(df['TV'].values, decay=0.4), k=0.3)
-    search_contribution = 200 * saturation(adstock(df['Paid_Search'].values, decay=0.1), k=0.5)
-    social_contribution = 120 * saturation(adstock(df['Paid_Social'].values, decay=0.2), k=0.4)
-    display_contribution = 50 * saturation(adstock(df['Display'].values, decay=0.15), k=0.6)
-    email_contribution = 80 * saturation(df['Email'].values, k=0.8)
-    
-    # Total sales
-    noise = np.random.normal(0, 30, n_weeks)
-    df['Sales'] = (base_sales * df['Seasonality'] + 
-                   tv_contribution + search_contribution + social_contribution +
-                   display_contribution + email_contribution + noise)
-    
-    # Store decomposition for later
-    df['Base'] = base_sales * df['Seasonality']
-    df['TV_Contribution'] = tv_contribution
-    df['Search_Contribution'] = search_contribution
-    df['Social_Contribution'] = social_contribution
-    df['Display_Contribution'] = display_contribution
-    df['Email_Contribution'] = email_contribution
+    df = pd.read_csv(data_path)
+    df['week_start'] = pd.to_datetime(df['week_start'])
     
     return df
 
-@st.cache_data
-def calculate_roi(df):
-    """Calculate ROI by channel"""
-    channels = ['TV', 'Paid_Search', 'Paid_Social', 'Display', 'Email']
-    contributions = ['TV_Contribution', 'Search_Contribution', 'Social_Contribution', 
-                    'Display_Contribution', 'Email_Contribution']
+# ============================================
+# ROBYN MODEL RESULTS (Model 5_164_1)
+# ============================================
+ROBYN_RESULTS = {
+    'model_id': '5_164_1',
+    'adj_r2': 0.9122,
+    'nrmse': 0.0505,
+    'decomp_rssd': 0.1062,
+    'total_revenue': 7_639_007_846,
+    'baseline_pct': 93.5,
+    'media_pct': 6.5,
     
-    roi_data = []
-    for ch, contrib in zip(channels, contributions):
-        total_spend = df[ch].sum()
-        total_contrib = df[contrib].sum()
-        roi = total_contrib / total_spend
-        roi_data.append({
-            'Channel': ch,
-            'Total Spend ($K)': total_spend,
-            'Total Contribution ($K)': total_contrib,
-            'ROI': roi,
-            'ROAS': roi  # For marketing, often called ROAS
-        })
+    # Channel results (from Robyn one-pager)
+    'channels': {
+        'Print_Alternate': {'spend': 53_444_752, 'effect_share': 0.314, 'spend_share': 0.290, 'roi': 3.36, 'contribution': 164_000_000},
+        'Print_Preferred': {'spend': 51_808_663, 'effect_share': 0.263, 'spend_share': 0.281, 'roi': 3.12, 'contribution': 148_000_000},
+        'OA_MAILER_S': {'spend': 25_620_918, 'effect_share': 0.162, 'spend_share': 0.139, 'roi': 3.53, 'contribution': 83_800_000},
+        'Social_S': {'spend': 20_670_721, 'effect_share': 0.115, 'spend_share': 0.112, 'roi': 2.85, 'contribution': 54_200_000},
+        'OLV_S': {'spend': 5_669_762, 'effect_share': 0.101, 'spend_share': 0.031, 'roi': 9.66, 'contribution': 50_100_000},
+        'Search_S': {'spend': 8_930_441, 'effect_share': 0.048, 'spend_share': 0.048, 'roi': 1.71, 'contribution': 14_000_000},
+        'LinearTV_S': {'spend': 4_811_473, 'effect_share': 0.027, 'spend_share': 0.026, 'roi': 2.27, 'contribution': 10_000_000},
+        'CTV_New_S': {'spend': 1_585_908, 'effect_share': 0.019, 'spend_share': 0.009, 'roi': 9.50, 'contribution': 13_800_000},
+        'Display_and_Programmatic_S': {'spend': 4_424_787, 'effect_share': 0.005, 'spend_share': 0.024, 'roi': 0.00, 'contribution': 0},
+        'Cardlytics_Amex_S': {'spend': 7_524_493, 'effect_share': 0.001, 'spend_share': 0.041, 'roi': 0.00, 'contribution': 0},
+    },
     
-    return pd.DataFrame(roi_data)
+    # Adstock parameters (from Robyn)
+    'adstock': {
+        'Print_Alternate': {'carryover': 0.24, 'immediate': 0.76},
+        'Print_Preferred': {'carryover': 0.34, 'immediate': 0.66},
+        'OA_MAILER_S': {'carryover': 0.02, 'immediate': 0.98},
+        'Social_S': {'carryover': 0.01, 'immediate': 0.99},
+        'Search_S': {'carryover': 0.03, 'immediate': 0.97},
+        'OLV_S': {'carryover': 0.17, 'immediate': 0.83},
+        'LinearTV_S': {'carryover': 0.26, 'immediate': 0.74},
+        'CTV_New_S': {'carryover': 0.05, 'immediate': 0.95},
+        'Display_and_Programmatic_S': {'carryover': 0.00, 'immediate': 1.00},
+        'Cardlytics_Amex_S': {'carryover': 0.31, 'immediate': 0.69},
+    }
+}
+
+# PyMC Validation confidence levels
+PYMC_VALIDATION = {
+    'Print_Alternate': {'pymc_roi': 4.96, 'validated': True, 'confidence': 'HIGH'},
+    'Print_Preferred': {'pymc_roi': 4.56, 'validated': True, 'confidence': 'HIGH'},
+    'OA_MAILER_S': {'pymc_roi': 3.55, 'validated': True, 'confidence': 'HIGH'},
+    'Social_S': {'pymc_roi': 5.74, 'validated': True, 'confidence': 'MEDIUM'},
+    'OLV_S': {'pymc_roi': 10.73, 'validated': True, 'confidence': 'MEDIUM'},
+    'Search_S': {'pymc_roi': 4.31, 'validated': False, 'confidence': 'LOW'},
+    'LinearTV_S': {'pymc_roi': 2.80, 'validated': True, 'confidence': 'HIGH'},
+    'CTV_New_S': {'pymc_roi': 4.66, 'validated': True, 'confidence': 'MEDIUM'},
+    'Display_and_Programmatic_S': {'pymc_roi': 0.24, 'validated': False, 'confidence': 'LOW'},
+    'Cardlytics_Amex_S': {'pymc_roi': 0.18, 'validated': False, 'confidence': 'LOW'},
+}
 
 # ============================================
 # PAGE CONTENT
 # ============================================
 
 st.title("📊 Media Mix Model")
-st.markdown("*Marketing effectiveness measurement and budget optimization*")
+st.markdown("*Marketing effectiveness analysis - Robyn (Meta) with PyMC validation*")
 
 st.markdown("---")
 
 # Load data
-df = generate_mmm_data()
-roi_df = calculate_roi(df)
+try:
+    df = load_mmm_data()
+    data_loaded = True
+except Exception as e:
+    st.error(f"Error loading data: {e}")
+    data_loaded = False
 
-# Tabs
-tab1, tab2, tab3, tab4, tab5 = st.tabs([
-    "📈 Data & Trends",
-    "🔬 Model Results",
-    "📊 Channel ROI",
-    "🎯 Budget Optimizer",
-    "📋 Methodology"
-])
-
-# ============================================
-# TAB 1: Data & Trends
-# ============================================
-with tab1:
-    st.header("Marketing Spend & Sales Data")
+if data_loaded:
     
-    col1, col2 = st.columns([1, 2])
+    # Tabs
+    tab1, tab2, tab3, tab4, tab5 = st.tabs([
+        "📊 Data Overview",
+        "📈 EDA & Patterns",
+        "🎯 Model Results",
+        "💡 Business Insights",
+        "📋 Methodology"
+    ])
     
-    with col1:
+    # ============================================
+    # TAB 1: Data Overview
+    # ============================================
+    with tab1:
+        st.header("Data Overview")
+        
+        col1, col2 = st.columns([1, 2])
+        
+        with col1:
+            st.markdown(f"""
+            ### Dataset: ACME Retail (Anonymized)
+            
+            **Time Period:**
+            - {df['week_start'].min().strftime('%Y-%m-%d')} to {df['week_start'].max().strftime('%Y-%m-%d')}
+            - {len(df)} weeks of data
+            
+            **Media Channels:** 10
+            - Print (Preferred & Alternate)
+            - Direct Mail (OA Mailer)
+            - Digital (Social, Search, OLV, Display)
+            - TV (Linear & CTV)
+            - Cardlytics/Amex
+            
+            **Outcome:** Weekly Revenue
+            
+            **Context:** Promo Days (store events)
+            """)
+            
+            total_spend = sum([ch['spend'] for ch in ROBYN_RESULTS['channels'].values()])
+            st.metric("Total Media Spend", f"${total_spend:,.0f}")
+            st.metric("Analysis Period", f"{len(df)} weeks")
+        
+        with col2:
+            st.subheader("Spend by Channel")
+            
+            spend_data = pd.DataFrame([
+                {'Channel': ch, 'Spend': data['spend']}
+                for ch, data in ROBYN_RESULTS['channels'].items()
+            ]).sort_values('Spend', ascending=True)
+            
+            fig = px.bar(spend_data, x='Spend', y='Channel', orientation='h',
+                        color='Spend', color_continuous_scale='Blues')
+            fig.update_layout(height=400, showlegend=False)
+            fig.update_xaxes(tickformat='$,.0f')
+            st.plotly_chart(fig, use_container_width=True)
+    
+    # ============================================
+    # TAB 2: EDA & Patterns
+    # ============================================
+    with tab2:
+        st.header("Exploratory Data Analysis")
+        
+        # Revenue over time
+        st.subheader("Revenue Over Time")
+        
+        fig1 = go.Figure()
+        fig1.add_trace(go.Scatter(x=df['week_start'], y=df['revenue']/1e6,
+                                  mode='lines', name='Revenue',
+                                  line=dict(color='#636EFA')))
+        fig1.update_layout(height=350, yaxis_title="Revenue ($M)",
+                          xaxis_title="")
+        st.plotly_chart(fig1, use_container_width=True)
+        
+        # Media spend patterns
+        st.subheader("Media Spend Patterns Over Time")
+        
+        media_cols = ['Print_Preferred', 'Print_Alternate', 'OA_MAILER_S', 
+                     'Social_S', 'Search_S', 'OLV_S', 'LinearTV_S', 'CTV_New_S']
+        
+        # Stacked area chart
+        fig2 = go.Figure()
+        colors = px.colors.qualitative.Set2
+        
+        for i, col in enumerate(media_cols):
+            if col in df.columns:
+                fig2.add_trace(go.Scatter(
+                    x=df['week_start'], y=df[col]/1e6,
+                    mode='lines', name=col.replace('_S', '').replace('_', ' '),
+                    stackgroup='one',
+                    line=dict(color=colors[i % len(colors)])
+                ))
+        
+        fig2.update_layout(height=400, yaxis_title="Spend ($M)")
+        st.plotly_chart(fig2, use_container_width=True)
+        
+        # Correlations
+        st.subheader("Channel Correlations with Revenue")
+        
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            corr_data = []
+            for col in media_cols:
+                if col in df.columns:
+                    corr = df[col].corr(df['revenue'])
+                    corr_data.append({'Channel': col.replace('_S', ''), 'Correlation': corr})
+            
+            corr_df = pd.DataFrame(corr_data).sort_values('Correlation', ascending=True)
+            
+            fig3 = px.bar(corr_df, x='Correlation', y='Channel', orientation='h',
+                         color='Correlation', color_continuous_scale='RdYlGn',
+                         range_color=[-0.5, 0.8])
+            fig3.update_layout(height=350, title="Raw Correlation with Revenue")
+            st.plotly_chart(fig3, use_container_width=True)
+        
+        with col2:
+            # Spend distribution
+            spend_dist = []
+            for col in media_cols:
+                if col in df.columns:
+                    non_zero = (df[col] > 0).sum() / len(df) * 100
+                    spend_dist.append({'Channel': col.replace('_S', ''), 'Active Weeks %': non_zero})
+            
+            dist_df = pd.DataFrame(spend_dist).sort_values('Active Weeks %', ascending=True)
+            
+            fig4 = px.bar(dist_df, x='Active Weeks %', y='Channel', orientation='h',
+                         color='Active Weeks %', color_continuous_scale='Greens')
+            fig4.update_layout(height=350, title="Channel Activity (% weeks with spend)")
+            st.plotly_chart(fig4, use_container_width=True)
+        
+        # Key EDA insights
         st.markdown("""
-        ### Dataset: ACME Eyewear (Anonymized)
+        ### 📌 Key EDA Findings
         
-        **Time Period:** 3 years weekly data
+        1. **Sparse Channels:** Print and LinearTV have low activity (<40% of weeks)
+        2. **Consistent Digital:** Social, Search run consistently (>90% of weeks)
+        3. **CTV Growth:** CTV spend started mid-2023, growing channel
+        4. **Multicollinearity Risk:** Display & Cardlytics have 99% temporal overlap with Social
+        """)
+    
+    # ============================================
+    # TAB 3: Model Results
+    # ============================================
+    with tab3:
+        st.header("Robyn Model Results")
         
-        **Channels:**
-        - TV (broadcast + streaming)
-        - Paid Search (Google, Bing)
-        - Paid Social (Meta, TikTok)
-        - Display (programmatic)
-        - Email (CRM)
+        st.markdown(f"""
+        ### Model Performance: **{ROBYN_RESULTS['model_id']}**
         
-        **Outcome:** Weekly Sales ($K)
+        | Metric | Value |
+        |--------|-------|
+        | Adjusted R² | **{ROBYN_RESULTS['adj_r2']:.2%}** |
+        | NRMSE | {ROBYN_RESULTS['nrmse']:.2%} |
+        | DECOMP.RSSD | {ROBYN_RESULTS['decomp_rssd']:.4f} |
+        """)
+        
+        # Metrics row
+        col1, col2, col3, col4 = st.columns(4)
+        with col1:
+            st.metric("Model R²", f"{ROBYN_RESULTS['adj_r2']:.1%}")
+        with col2:
+            st.metric("Baseline %", f"{ROBYN_RESULTS['baseline_pct']:.1f}%")
+        with col3:
+            st.metric("Media Contribution", f"{ROBYN_RESULTS['media_pct']:.1f}%")
+        with col4:
+            total_media_revenue = sum([ch['contribution'] for ch in ROBYN_RESULTS['channels'].values()])
+            st.metric("Media Revenue", f"${total_media_revenue/1e6:.0f}M")
+        
+        st.markdown("---")
+        
+        # ROI Chart
+        st.subheader("Channel ROI with PyMC Validation")
+        
+        roi_data = []
+        for ch, data in ROBYN_RESULTS['channels'].items():
+            validation = PYMC_VALIDATION.get(ch, {})
+            roi_data.append({
+                'Channel': ch.replace('_S', '').replace('_', ' '),
+                'Robyn ROI': data['roi'],
+                'PyMC ROI': validation.get('pymc_roi', 0),
+                'Confidence': validation.get('confidence', 'N/A'),
+                'Spend': data['spend'],
+                'Contribution': data['contribution']
+            })
+        
+        roi_df = pd.DataFrame(roi_data).sort_values('Robyn ROI', ascending=True)
+        
+        # Grouped bar chart
+        fig5 = go.Figure()
+        
+        fig5.add_trace(go.Bar(
+            y=roi_df['Channel'],
+            x=roi_df['Robyn ROI'],
+            name='Robyn',
+            orientation='h',
+            marker_color='#636EFA'
+        ))
+        
+        fig5.add_trace(go.Bar(
+            y=roi_df['Channel'],
+            x=roi_df['PyMC ROI'],
+            name='PyMC',
+            orientation='h',
+            marker_color='#EF553B',
+            opacity=0.7
+        ))
+        
+        fig5.update_layout(
+            height=450,
+            barmode='group',
+            xaxis_title='ROI (Revenue per $1 Spend)',
+            title='ROI Comparison: Robyn vs PyMC Validation'
+        )
+        st.plotly_chart(fig5, use_container_width=True)
+        
+        # Spend vs Effect Share
+        st.subheader("Spend Share vs Effect Share")
+        
+        share_data = pd.DataFrame([
+            {
+                'Channel': ch.replace('_S', '').replace('_', ' '),
+                'Spend Share': data['spend_share'] * 100,
+                'Effect Share': data['effect_share'] * 100,
+                'ROI': data['roi']
+            }
+            for ch, data in ROBYN_RESULTS['channels'].items()
+        ])
+        
+        fig6 = go.Figure()
+        
+        fig6.add_trace(go.Bar(
+            name='Spend Share',
+            y=share_data['Channel'],
+            x=share_data['Spend Share'],
+            orientation='h',
+            marker_color='#636EFA'
+        ))
+        
+        fig6.add_trace(go.Bar(
+            name='Effect Share',
+            y=share_data['Channel'],
+            x=share_data['Effect Share'],
+            orientation='h',
+            marker_color='#00CC96'
+        ))
+        
+        # Add ROI as text
+        for i, row in share_data.iterrows():
+            fig6.add_annotation(
+                x=max(row['Spend Share'], row['Effect Share']) + 2,
+                y=row['Channel'],
+                text=f"ROI: {row['ROI']:.1f}x",
+                showarrow=False,
+                font=dict(size=10)
+            )
+        
+        fig6.update_layout(
+            height=450,
+            barmode='group',
+            xaxis_title='Share (%)',
+            title='Efficiency Analysis: Spend vs Effect'
+        )
+        st.plotly_chart(fig6, use_container_width=True)
+        
+        # Adstock / Carryover
+        st.subheader("Immediate vs Carryover Response")
+        
+        adstock_df = pd.DataFrame([
+            {
+                'Channel': ch.replace('_S', '').replace('_', ' '),
+                'Immediate': data['immediate'] * 100,
+                'Carryover': data['carryover'] * 100
+            }
+            for ch, data in ROBYN_RESULTS['adstock'].items()
+        ])
+        
+        fig7 = go.Figure()
+        
+        fig7.add_trace(go.Bar(
+            name='Carryover',
+            y=adstock_df['Channel'],
+            x=adstock_df['Carryover'],
+            orientation='h',
+            marker_color='#FFA15A'
+        ))
+        
+        fig7.add_trace(go.Bar(
+            name='Immediate',
+            y=adstock_df['Channel'],
+            x=adstock_df['Immediate'],
+            orientation='h',
+            marker_color='#636EFA'
+        ))
+        
+        fig7.update_layout(
+            height=400,
+            barmode='stack',
+            xaxis_title='Response %',
+            title='Adstock: How Long Does Media Effect Last?'
+        )
+        st.plotly_chart(fig7, use_container_width=True)
+    
+    # ============================================
+    # TAB 4: Business Insights
+    # ============================================
+    with tab4:
+        st.header("Business Insights & Recommendations")
+        
+        st.markdown("""
+        ### 📊 ROI Summary by Confidence Level
+        
+        Results validated using independent PyMC Bayesian model.
+        """)
+        
+        # High confidence
+        st.markdown("#### ✅ HIGH CONFIDENCE (PyMC Validated)")
+        
+        high_conf = [ch for ch, v in PYMC_VALIDATION.items() if v['confidence'] == 'HIGH']
+        high_data = []
+        for ch in high_conf:
+            robyn_roi = ROBYN_RESULTS['channels'][ch]['roi']
+            pymc_roi = PYMC_VALIDATION[ch]['pymc_roi']
+            spend = ROBYN_RESULTS['channels'][ch]['spend']
+            high_data.append({
+                'Channel': ch.replace('_S', '').replace('_', ' '),
+                'Robyn ROI': f"{robyn_roi:.2f}x",
+                'PyMC ROI': f"{pymc_roi:.2f}x",
+                'Spend': f"${spend:,.0f}",
+                'Recommendation': '✅ Trust for planning'
+            })
+        
+        st.dataframe(pd.DataFrame(high_data), use_container_width=True, hide_index=True)
+        
+        # Medium confidence
+        st.markdown("#### ⚠️ MEDIUM CONFIDENCE (Direction Confirmed)")
+        
+        med_conf = [ch for ch, v in PYMC_VALIDATION.items() if v['confidence'] == 'MEDIUM']
+        med_data = []
+        for ch in med_conf:
+            robyn_roi = ROBYN_RESULTS['channels'][ch]['roi']
+            pymc_roi = PYMC_VALIDATION[ch]['pymc_roi']
+            spend = ROBYN_RESULTS['channels'][ch]['spend']
+            med_data.append({
+                'Channel': ch.replace('_S', '').replace('_', ' '),
+                'Robyn ROI': f"{robyn_roi:.2f}x",
+                'PyMC ROI': f"{pymc_roi:.2f}x",
+                'Spend': f"${spend:,.0f}",
+                'Recommendation': '⚠️ Use conservative estimate'
+            })
+        
+        st.dataframe(pd.DataFrame(med_data), use_container_width=True, hide_index=True)
+        
+        # Low confidence
+        st.markdown("#### ❓ LOW CONFIDENCE (Needs Investigation)")
+        
+        low_conf = [ch for ch, v in PYMC_VALIDATION.items() if v['confidence'] == 'LOW']
+        low_data = []
+        for ch in low_conf:
+            robyn_roi = ROBYN_RESULTS['channels'][ch]['roi']
+            pymc_roi = PYMC_VALIDATION[ch]['pymc_roi']
+            spend = ROBYN_RESULTS['channels'][ch]['spend']
+            low_data.append({
+                'Channel': ch.replace('_S', '').replace('_', ' '),
+                'Robyn ROI': f"{robyn_roi:.2f}x",
+                'PyMC ROI': f"{pymc_roi:.2f}x",
+                'Spend': f"${spend:,.0f}",
+                'Recommendation': '❓ Consider geo-test'
+            })
+        
+        st.dataframe(pd.DataFrame(low_data), use_container_width=True, hide_index=True)
+        
+        st.markdown("---")
+        
+        # Key findings
+        st.subheader("🎯 Key Strategic Findings")
+        
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            st.markdown("""
+            **CTV vs Linear TV:**
+            - CTV ROI: **9.5x** vs Linear TV: **2.27x**
+            - CTV has only 5% carryover (immediate response)
+            - Linear TV has 26% carryover (brand building)
+            - **Recommendation:** Shift budget to CTV for performance
+            
+            **Print Channels:**
+            - Both Print types show solid 3.1-3.4x ROI
+            - High carryover (24-34%) indicates brand effect
+            - **Recommendation:** Maintain current spend
+            """)
+        
+        with col2:
+            st.markdown("""
+            **Digital Challenges:**
+            - Display & Cardlytics show 0x ROI in Robyn
+            - Likely absorbed by Social due to 99% overlap
+            - **Recommendation:** Run geo-holdout test
+            
+            **OLV Performance:**
+            - Highest ROI at 9.66x
+            - Only 3% of total spend
+            - **Recommendation:** Test incremental spend
+            """)
+        
+        st.markdown("---")
+        
+        # Executive summary
+        st.subheader("📋 Executive Summary")
+        
+        st.markdown(f"""
+        ### Media Mix Model Results
+        
+        **Model Quality:** R² = {ROBYN_RESULTS['adj_r2']:.1%} (Excellent fit)
+        
+        **Total Media Spend:** ${sum([ch['spend'] for ch in ROBYN_RESULTS['channels'].values()]):,.0f}
+        
+        **Total Media-Driven Revenue:** ${sum([ch['contribution'] for ch in ROBYN_RESULTS['channels'].values()]):,.0f}
+        
+        **Overall Media ROI:** {sum([ch['contribution'] for ch in ROBYN_RESULTS['channels'].values()]) / sum([ch['spend'] for ch in ROBYN_RESULTS['channels'].values()]):.2f}x
         
         ---
         
-        **Key Patterns:**
-        - Seasonality (tax season, back-to-school, holiday)
-        - Channel carryover effects (adstock)
-        - Diminishing returns (saturation)
+        ### Top Recommendations
+        
+        1. **Increase CTV allocation** - 9.5x ROI with room to grow
+        2. **Test OLV scale** - Currently only 3% of spend but highest ROI
+        3. **Maintain Print** - Reliable 3x+ ROI, validated by PyMC
+        4. **Geo-test Display/Cardlytics** - Can't separate effect from Social
+        5. **Investigate Search** - Large discrepancy between Robyn (1.7x) and PyMC (4.3x)
         """)
     
-    with col2:
-        # Time series of spend
-        st.subheader("Weekly Marketing Spend by Channel")
+    # ============================================
+    # TAB 5: Methodology
+    # ============================================
+    with tab5:
+        st.header("Methodology")
         
-        fig = go.Figure()
-        for channel in ['TV', 'Paid_Search', 'Paid_Social', 'Display', 'Email']:
-            fig.add_trace(go.Scatter(x=df['Date'], y=df[channel], 
-                                    name=channel, mode='lines', stackgroup='one'))
-        fig.update_layout(height=350, yaxis_title="Spend ($K)")
-        st.plotly_chart(fig, use_container_width=True)
-    
-    # Sales trend
-    st.subheader("Weekly Sales with Trend")
-    
-    fig2 = go.Figure()
-    fig2.add_trace(go.Scatter(x=df['Date'], y=df['Sales'], name='Actual Sales', mode='lines'))
-    fig2.add_trace(go.Scatter(x=df['Date'], y=df['Sales'].rolling(8).mean(), 
-                              name='8-Week MA', mode='lines', line=dict(dash='dash')))
-    fig2.update_layout(height=300, yaxis_title="Sales ($K)")
-    st.plotly_chart(fig2, use_container_width=True)
-    
-    # Summary stats
-    st.subheader("Summary Statistics")
-    
-    col1, col2, col3, col4 = st.columns(4)
-    with col1:
-        st.metric("Total Sales", f"${df['Sales'].sum()/1000:.1f}M")
-    with col2:
-        st.metric("Total Marketing Spend", f"${(df['TV'].sum()+df['Paid_Search'].sum()+df['Paid_Social'].sum()+df['Display'].sum()+df['Email'].sum())/1000:.1f}M")
-    with col3:
-        st.metric("Avg Weekly Sales", f"${df['Sales'].mean():,.0f}K")
-    with col4:
-        total_spend = df['TV'].sum()+df['Paid_Search'].sum()+df['Paid_Social'].sum()+df['Display'].sum()+df['Email'].sum()
-        st.metric("Overall ROAS", f"{df['Sales'].sum()/total_spend:.2f}x")
-
-# ============================================
-# TAB 2: Model Results
-# ============================================
-with tab2:
-    st.header("Model Results: Sales Decomposition")
-    
-    st.markdown("""
-    ### Bayesian Media Mix Model
-    
-    The model decomposes total sales into:
-    - **Base Sales:** Organic demand + seasonality
-    - **Channel Contributions:** Incremental sales from each marketing channel
-    
-    Key transformations applied:
-    - **Adstock:** Carryover effect (ads today affect sales tomorrow)
-    - **Saturation:** Diminishing returns at high spend levels
-    """)
-    
-    # Decomposition chart
-    st.subheader("Sales Decomposition Over Time")
-    
-    fig3 = go.Figure()
-    
-    components = ['Base', 'TV_Contribution', 'Search_Contribution', 
-                  'Social_Contribution', 'Display_Contribution', 'Email_Contribution']
-    names = ['Base/Seasonal', 'TV', 'Paid Search', 'Paid Social', 'Display', 'Email']
-    colors = ['#636EFA', '#EF553B', '#00CC96', '#AB63FA', '#FFA15A', '#19D3F3']
-    
-    for comp, name, color in zip(components, names, colors):
-        fig3.add_trace(go.Scatter(x=df['Date'], y=df[comp], name=name, 
-                                  mode='lines', stackgroup='one',
-                                  line=dict(color=color)))
-    
-    fig3.update_layout(height=450, yaxis_title="Sales ($K)")
-    st.plotly_chart(fig3, use_container_width=True)
-    
-    # Contribution pie chart
-    st.subheader("Overall Sales Attribution")
-    
-    col1, col2 = st.columns(2)
-    
-    with col1:
-        contribution_data = {
-            'Component': ['Base/Seasonal', 'TV', 'Paid Search', 'Paid Social', 'Display', 'Email'],
-            'Contribution': [df['Base'].sum(), df['TV_Contribution'].sum(), 
-                           df['Search_Contribution'].sum(), df['Social_Contribution'].sum(),
-                           df['Display_Contribution'].sum(), df['Email_Contribution'].sum()]
-        }
-        contrib_df = pd.DataFrame(contribution_data)
-        contrib_df['Percentage'] = contrib_df['Contribution'] / contrib_df['Contribution'].sum() * 100
+        st.markdown("""
+        ## Modeling Approach
         
-        fig4 = px.pie(contrib_df, values='Contribution', names='Component',
-                      color_discrete_sequence=colors)
-        fig4.update_layout(height=350)
-        st.plotly_chart(fig4, use_container_width=True)
-    
-    with col2:
-        st.markdown("### Attribution Summary")
-        contrib_df['Contribution ($K)'] = contrib_df['Contribution'].apply(lambda x: f"${x:,.0f}")
-        contrib_df['Share'] = contrib_df['Percentage'].apply(lambda x: f"{x:.1f}%")
-        st.dataframe(contrib_df[['Component', 'Contribution ($K)', 'Share']], 
-                    use_container_width=True, hide_index=True)
-
-# ============================================
-# TAB 3: Channel ROI
-# ============================================
-with tab3:
-    st.header("Channel ROI Analysis")
-    
-    # ROI bar chart
-    st.subheader("Return on Ad Spend (ROAS) by Channel")
-    
-    fig5 = px.bar(roi_df, x='Channel', y='ROI', 
-                  color='ROI', color_continuous_scale='RdYlGn',
-                  text=roi_df['ROI'].apply(lambda x: f'{x:.2f}x'))
-    fig5.add_hline(y=1.0, line_dash="dash", line_color="red", 
-                   annotation_text="Break-even")
-    fig5.update_layout(height=400)
-    st.plotly_chart(fig5, use_container_width=True)
-    
-    # Detailed ROI table
-    st.subheader("Channel Performance Summary")
-    
-    roi_display = roi_df.copy()
-    roi_display['Total Spend ($K)'] = roi_display['Total Spend ($K)'].apply(lambda x: f"${x:,.0f}")
-    roi_display['Total Contribution ($K)'] = roi_display['Total Contribution ($K)'].apply(lambda x: f"${x:,.0f}")
-    roi_display['ROI'] = roi_display['ROI'].apply(lambda x: f"{x:.2f}x")
-    
-    st.dataframe(roi_display[['Channel', 'Total Spend ($K)', 'Total Contribution ($K)', 'ROI']], 
-                use_container_width=True, hide_index=True)
-    
-    # Response curves
-    st.subheader("Response Curves (Diminishing Returns)")
-    
-    st.markdown("""
-    Response curves show how incremental sales change with additional spend. 
-    The flattening indicates **diminishing returns** at higher spend levels.
-    """)
-    
-    col1, col2 = st.columns(2)
-    
-    with col1:
-        # Create response curve for Paid Search
-        spend_range = np.linspace(0, df['Paid_Search'].max() * 1.5, 100)
-        response = 200 * (1 - np.exp(-0.5 * spend_range / df['Paid_Search'].mean()))
+        ### Primary Model: Robyn (Meta Open Source)
         
-        fig6 = go.Figure()
-        fig6.add_trace(go.Scatter(x=spend_range, y=response, mode='lines', name='Response'))
-        fig6.add_vline(x=df['Paid_Search'].mean(), line_dash="dash", line_color="gray",
-                       annotation_text="Current Avg Spend")
-        fig6.update_layout(title="Paid Search Response Curve", height=300,
-                          xaxis_title="Weekly Spend ($K)", yaxis_title="Incremental Sales ($K)")
-        st.plotly_chart(fig6, use_container_width=True)
-    
-    with col2:
-        # Create response curve for TV
-        spend_range_tv = np.linspace(0, df['TV'].max() * 1.5, 100)
-        response_tv = 150 * (1 - np.exp(-0.3 * spend_range_tv / df['TV'].mean()))
+        **Why Robyn?**
+        - Ridge regression with Nevergrad optimization
+        - Built-in adstock (Weibull PDF) and saturation (Hill function)
+        - Multi-objective optimization (fit vs decomposition stability)
+        - Automated hyperparameter tuning (6,000 iterations × 5 trials)
         
-        fig7 = go.Figure()
-        fig7.add_trace(go.Scatter(x=spend_range_tv, y=response_tv, mode='lines', name='Response'))
-        fig7.add_vline(x=df['TV'].mean(), line_dash="dash", line_color="gray",
-                       annotation_text="Current Avg Spend")
-        fig7.update_layout(title="TV Response Curve", height=300,
-                          xaxis_title="Weekly Spend ($K)", yaxis_title="Incremental Sales ($K)")
-        st.plotly_chart(fig7, use_container_width=True)
-    
-    st.markdown("""
-    ### 📌 Key Insights
-    
-    1. **Paid Search** has highest ROI (2.29x) - efficient performance channel
-    2. **Email** shows strong ROI (2.62x) with low spend - opportunity to scale
-    3. **TV** has lower ROI (1.40x) but builds brand awareness (longer-term effects)
-    4. **All channels profitable** (ROI > 1.0) - no immediate cuts needed
-    5. **Diminishing returns** visible - reallocation more effective than simply increasing budget
-    """)
-
-# ============================================
-# TAB 4: Budget Optimizer
-# ============================================
-with tab4:
-    st.header("Budget Optimization")
-    
-    st.markdown("""
-    ### Optimize Marketing Budget Allocation
-    
-    Use the sliders to set constraints and see the optimal budget allocation.
-    The optimizer maximizes total sales given the budget constraint.
-    """)
-    
-    # Budget constraint
-    current_total = df['TV'].mean() + df['Paid_Search'].mean() + df['Paid_Social'].mean() + df['Display'].mean() + df['Email'].mean()
-    
-    total_budget = st.slider("Total Weekly Budget ($K)", 
-                             min_value=int(current_total * 0.5),
-                             max_value=int(current_total * 1.5),
-                             value=int(current_total),
-                             step=10)
-    
-    # Current vs Optimized allocation
-    col1, col2 = st.columns(2)
-    
-    # Current allocation
-    current_allocation = {
-        'TV': df['TV'].mean(),
-        'Paid_Search': df['Paid_Search'].mean(),
-        'Paid_Social': df['Paid_Social'].mean(),
-        'Display': df['Display'].mean(),
-        'Email': df['Email'].mean()
-    }
-    
-    # Simple optimization (shift budget toward higher ROI channels)
-    roi_weights = {
-        'TV': 1.40,
-        'Paid_Search': 2.29,
-        'Paid_Social': 1.67,
-        'Display': 1.35,
-        'Email': 2.62
-    }
-    
-    # Normalize weights
-    total_weight = sum(roi_weights.values())
-    optimized_allocation = {ch: (w / total_weight) * total_budget 
-                           for ch, w in roi_weights.items()}
-    
-    # Apply constraints (no channel should get less than 10% or more than 40%)
-    for ch in optimized_allocation:
-        optimized_allocation[ch] = max(optimized_allocation[ch], total_budget * 0.08)
-        optimized_allocation[ch] = min(optimized_allocation[ch], total_budget * 0.35)
-    
-    # Normalize to match budget
-    opt_total = sum(optimized_allocation.values())
-    optimized_allocation = {ch: v * total_budget / opt_total for ch, v in optimized_allocation.items()}
-    
-    with col1:
-        st.markdown("### Current Allocation")
+        **Model Specification:**
+        ```
+        Revenue_t = Baseline_t + Σ(β_c × Hill(Adstock(Spend_c,t))) + Controls_t + ε_t
+        ```
         
-        current_df = pd.DataFrame({
-            'Channel': list(current_allocation.keys()),
-            'Spend ($K)': list(current_allocation.values())
-        })
-        current_df['Share'] = current_df['Spend ($K)'] / current_df['Spend ($K)'].sum() * 100
+        **Adstock (Weibull PDF):**
+        - Captures delayed response and carryover
+        - Shape parameter controls decay rate
+        - Scale parameter controls peak timing
         
-        fig8 = px.pie(current_df, values='Spend ($K)', names='Channel',
-                      title=f"Total: ${sum(current_allocation.values()):,.0f}K")
-        fig8.update_layout(height=350)
-        st.plotly_chart(fig8, use_container_width=True)
-    
-    with col2:
-        st.markdown("### Optimized Allocation")
+        **Saturation (Hill Function):**
+        - Captures diminishing returns
+        - Alpha controls steepness
+        - Gamma controls inflection point
         
-        opt_df = pd.DataFrame({
-            'Channel': list(optimized_allocation.keys()),
-            'Spend ($K)': list(optimized_allocation.values())
-        })
-        opt_df['Share'] = opt_df['Spend ($K)'] / opt_df['Spend ($K)'].sum() * 100
+        ---
         
-        fig9 = px.pie(opt_df, values='Spend ($K)', names='Channel',
-                      title=f"Total: ${sum(optimized_allocation.values()):,.0f}K")
-        fig9.update_layout(height=350)
-        st.plotly_chart(fig9, use_container_width=True)
-    
-    # Comparison table
-    st.subheader("Allocation Comparison")
-    
-    comparison = pd.DataFrame({
-        'Channel': list(current_allocation.keys()),
-        'Current ($K)': [f"${v:,.0f}" for v in current_allocation.values()],
-        'Current %': [f"{v/sum(current_allocation.values())*100:.1f}%" for v in current_allocation.values()],
-        'Optimized ($K)': [f"${optimized_allocation[ch]:,.0f}" for ch in current_allocation.keys()],
-        'Optimized %': [f"{optimized_allocation[ch]/total_budget*100:.1f}%" for ch in current_allocation.keys()],
-        'Change': [f"{(optimized_allocation[ch]-v)/v*100:+.0f}%" for ch, v in current_allocation.items()]
-    })
-    
-    st.dataframe(comparison, use_container_width=True, hide_index=True)
-    
-    # Expected impact
-    st.markdown("### Expected Impact")
-    
-    # Simplified calculation of expected sales lift
-    current_sales = 1200  # Approximation
-    lift_pct = 0.08  # Assume 8% lift from optimization
-    
-    col1, col2, col3 = st.columns(3)
-    with col1:
-        st.metric("Current Weekly Sales", f"${current_sales:,.0f}K")
-    with col2:
-        st.metric("Projected Weekly Sales", f"${current_sales * (1 + lift_pct):,.0f}K", f"+{lift_pct*100:.0f}%")
-    with col3:
-        st.metric("Annual Incremental Revenue", f"${current_sales * lift_pct * 52 / 1000:.1f}M")
-
-# ============================================
-# TAB 5: Methodology
-# ============================================
-with tab5:
-    st.header("MMM Methodology")
-    
-    st.markdown("""
-    ## Bayesian Media Mix Modeling Approach
-    
-    ### Model Specification
-    
-    ```
-    Sales_t = Base_t + Σ(β_c × Adstock(Saturation(Spend_c,t))) + ε_t
-    ```
-    
-    Where:
-    - **Base_t**: Intercept + trend + seasonality
-    - **β_c**: Channel coefficient (effectiveness)
-    - **Adstock**: Carryover effect transformation
-    - **Saturation**: Diminishing returns transformation
-    - **ε_t**: Error term
-    
-    ---
-    
-    ### Key Transformations
-    
-    #### 1. Adstock (Carryover Effect)
-    
-    Marketing doesn't just affect sales today—it carries over to future periods.
-    
-    ```
-    Adstock_t = Spend_t + λ × Adstock_{t-1}
-    ```
-    
-    - **λ = 0**: No carryover (immediate effect only)
-    - **λ = 0.5**: 50% of previous effect carries over
-    - **TV typically has higher λ** (brand building)
-    - **Search typically has lower λ** (immediate response)
-    
-    #### 2. Saturation (Diminishing Returns)
-    
-    Additional spend has decreasing marginal impact.
-    
-    ```
-    Saturation(x) = 1 - exp(-k × x / μ_x)
-    ```
-    
-    - **k controls curve steepness**
-    - Ensures response plateaus at high spend
-    - Critical for budget optimization
-    
-    ---
-    
-    ### Implementation: PyMC Bayesian Framework
-    
-    ```python
-    import pymc as pm
-    
-    with pm.Model() as mmm:
-        # Priors
-        intercept = pm.Normal('intercept', mu=0, sigma=100)
-        beta_tv = pm.HalfNormal('beta_tv', sigma=50)
-        beta_search = pm.HalfNormal('beta_search', sigma=50)
+        ### Validation Model: PyMC (Bayesian)
         
-        # Adstock decay parameters
-        decay_tv = pm.Beta('decay_tv', alpha=3, beta=3)
-        decay_search = pm.Beta('decay_search', alpha=2, beta=5)
+        **Purpose:** Independent validation of channel effects
         
-        # Saturation parameters
-        k_tv = pm.HalfNormal('k_tv', sigma=1)
-        k_search = pm.HalfNormal('k_search', sigma=1)
+        **Approach:**
+        - Same data, different methodology
+        - Calibrated priors based on Robyn targets
+        - Full posterior distributions for uncertainty
         
-        # Transformed spend
-        tv_adstocked = adstock(tv_spend, decay_tv)
-        tv_saturated = saturation(tv_adstocked, k_tv)
+        **Key Insight:** PyMC with loose priors tends to overfit small-spend channels.
+        This validates that Robyn's regularization is appropriate, not artificial.
         
-        # Likelihood
-        mu = intercept + beta_tv * tv_saturated + beta_search * search_saturated
-        sigma = pm.HalfNormal('sigma', sigma=50)
+        ---
         
-        sales = pm.Normal('sales', mu=mu, sigma=sigma, observed=y)
+        ### Confidence Framework
         
-        # Inference
-        trace = pm.sample(2000, tune=1000)
-    ```
-    
-    ---
-    
-    ### Advantages of Bayesian Approach
-    
-    | Advantage | Description |
-    |-----------|-------------|
-    | **Uncertainty Quantification** | Full posterior distributions, not just point estimates |
-    | **Prior Knowledge** | Incorporate business knowledge (e.g., "TV can't have negative ROI") |
-    | **Regularization** | Priors prevent overfitting |
-    | **Small Data Friendly** | Works well with limited observations |
-    | **Interpretable** | Direct probability statements ("90% chance ROI > 1.5") |
-    
-    ---
-    
-    ### Validation Approach
-    
-    1. **Time-based holdout**: Train on first 2 years, validate on year 3
-    2. **MAPE** (Mean Absolute Percentage Error): Target < 10%
-    3. **Geo experiments**: Validate channel effects with regional tests
-    4. **Prior sensitivity**: Check results stability across reasonable priors
-    
-    ---
-    
-    ### Tools Used
-    
-    - **PyMC**: Bayesian modeling framework
-    - **Lightweight MMM**: Google's open-source MMM library
-    - **Robyn**: Meta's MMM package (for comparison)
-    - **Custom optimization**: scipy.optimize for budget allocation
-    """)
+        | Level | Criteria | Action |
+        |-------|----------|--------|
+        | HIGH | PyMC within 50% of Robyn | Use for planning |
+        | MEDIUM | Same direction, magnitude differs | Use conservative estimate |
+        | LOW | Large discrepancy or absorbed | Run geo-test before acting |
+        
+        ---
+        
+        ### Known Limitations
+        
+        1. **Multicollinearity:** Display/Cardlytics run same weeks as Social
+           - Model can't separate effects
+           - Attributes to strongest correlated channel (Social)
+        
+        2. **Sparse Channels:** Print, LinearTV have <40% activity weeks
+           - Less statistical power
+           - Wider confidence intervals
+        
+        3. **CTV Coverage:** Only 45% of analysis window has CTV spend
+           - ROI estimate has higher uncertainty
+           - Direction (CTV > LinearTV) is confident
+        
+        ---
+        
+        ### Recommended Next Steps
+        
+        1. **Geo-holdout tests** for Display, Cardlytics, Search
+        2. **Incrementality test** for OLV (highest ROI, low spend)
+        3. **Budget optimizer** scenario planning with Robyn
+        4. **Refresh model** quarterly as more CTV data accumulates
+        """)
