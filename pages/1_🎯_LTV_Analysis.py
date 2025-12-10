@@ -2,7 +2,7 @@
 Page 1: Predictive LTV Analysis
 ================================
 Customer Lifetime Value estimation with aggregate data
-Using real gym membership data (anonymized as ACME Gym)
+Using real gym membership data (anonymized)
 """
 
 import streamlit as st
@@ -20,11 +20,10 @@ st.set_page_config(page_title="LTV Analysis", page_icon="🎯", layout="wide")
 # ============================================
 @st.cache_data
 def load_data():
-    """Load real gym membership data from CSV"""
-    # Get the directory where this script is located
+    """Load pre-aggregated monthly gym membership data from CSV"""
     current_dir = os.path.dirname(os.path.abspath(__file__))
     parent_dir = os.path.dirname(current_dir)
-    data_path = os.path.join(parent_dir, 'data_sources', 'acme_gym_daily.csv')
+    data_path = os.path.join(parent_dir, 'data_sources', 'acme_gym_monthly.csv')
     
     df = pd.read_csv(data_path)
     
@@ -39,7 +38,7 @@ def load_data():
 
 @st.cache_data
 def create_monthly_aggregates(df):
-    """Aggregate daily data to monthly level"""
+    """Aggregate monthly club-level data to monthly totals by membership type"""
     df = df.copy()
     df['YearMonth'] = df['Date'].dt.to_period('M')
     
@@ -109,13 +108,13 @@ if data_loaded:
         
         with col1:
             st.markdown(f"""
-            ### Dataset: ACME Gym (Anonymized)
+            ### Dataset: Fitness Chain (Anonymized)
             
             **Data Available:**
-            - Daily joins and cancellations
+            - Monthly joins and cancellations
             - {df_daily['ABC_Club_ID'].nunique():,} gym locations
-            - {df_daily['Date'].nunique():,} days of data
-            - {df_daily['Date'].min().strftime('%Y-%m-%d')} to {df_daily['Date'].max().strftime('%Y-%m-%d')}
+            - {df_daily['Date'].dt.to_period('M').nunique():,} months of data
+            - {df_daily['Date'].min().strftime('%Y-%m')} to {df_daily['Date'].max().strftime('%Y-%m')}
             - 2 main membership tiers
             
             **Data NOT Available:**
